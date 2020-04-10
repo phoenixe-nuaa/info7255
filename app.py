@@ -1,86 +1,274 @@
-import redis
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, make_response
 from flask_redis import FlaskRedis
 from flask_jwt_extended import (
-    JWTManager, create_access_token, create_refresh_token, get_jti,
-    jwt_refresh_token_required, get_jwt_identity, jwt_required, get_raw_jwt
+    JWTManager, jwt_required, create_access_token, get_jwt_identity
 )
+from elasticsearch import Elasticsearch
 
 REDIS_URL = "redis://localhost:6379/0"
-
 app = Flask(__name__)
 redis_client = FlaskRedis(app)
 app.config['JSON_SORT_KEYS'] = False
-app.secret_key = 'ChangeMe!'
+es = Elasticsearch()
 
-# Setup the flask-jwt-extended extension. See:
-ACCESS_EXPIRES = timedelta(minutes=15)
-REFRESH_EXPIRES = timedelta(days=30)
-EXPIRE = timedelta(minutes=10)
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = ACCESS_EXPIRES
-app.config['JWT_REFRESH_TOKEN_EXPIRES'] = REFRESH_EXPIRES
-app.config['JWT_BLACKLIST_ENABLED'] = True
-app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access', 'refresh']
+# Setup the Flask-JWT-Extended extension
+app.config['JWT_SECRET_KEY'] = 'super-secret'  # Change this!
 jwt = JWTManager(app)
-
-# Setup our redis connection for storing the blacklisted tokens
-revoked_store = redis.StrictRedis(host='localhost', port=6379, db=0,
-                                  decode_responses=True)
+EXPIRE = timedelta(minutes=10)
 
 
-# To do: Prune the token part
+# To do: Prune the token part (done)
 #        Put and Patch for new objects
 #        Flask MVC
 
 
+@app.route('/insert_data', methods=['POST'])
+def insert_data():
+    id = request.json.get('id')
+    username = request.json.get('username')
+    password = request.json.get('password')
 
-# Create our function to check if a token has been blacklisted. In this simple
-# case, we will just store the tokens jti (unique identifier) in redis
-# whenever we create a new token (with the revoked status being 'false'). This
-# function will return the revoked status of a token. If a token doesn't
-# exist in this store, we don't know where it came from (as we are adding newly
-# created tokens to our store with a revoked status of 'false'). In this case
-# we will consider the token to be revoked, for safety purposes.
-@jwt.token_in_blacklist_loader
-def check_if_token_is_revoked(decrypted_token):
-    jti = decrypted_token['jti']
-    entry = revoked_store.get(jti)
-    if entry is None:
-        return True
-    return entry == 'true'
+    body = {
+        'id': id,
+        'name': username,
+        'password': password,
+        'timestamp': datetime.now()
+    }
+
+    result = es.index(index='contents', doc_type='title', id=id, body=body)
+
+    return jsonify(result)
 
 
+@app.route('/search', methods=['POST'])
+def search():
+    try:
+        keyword = request.json.get('keyword')
+        if keyword is None:
+            return jsonify("keyword does not exist in the json input!"), 404
+        else:
+            res = es.get(index="contents", doc_type='title', id=keyword)
+            return jsonify(res['_source'])
+    except Exception as e:
+        if "ConnectionError" in str(e):
+            return jsonify("Connection Error! Please check if your elasticsearch is running!"), 500
+        if "NotFound" in str(e):
+            return jsonify("Id not found! Please double check your input!"), 404
+
+
+# index
+@app.route('/insert_use', methods=['POST'])
+def insert_use():
+    try:
+        input_json = request.get_json()
+        object_id = input_json.get('objectId')
+        object_type = input_json.get('objectType')
+        plan_cost_shares = input_json.get('planCostShares')
+        linked_plan_services = input_json.get('linkedPlanServices')
+        org = input_json.get('_org')
+        plan_type = input_json.get('planType')
+        creation_date = input_json.get('creationDate')
+
+        # 508
+        hash_root = {'planCostShares': plan_cost_shares.get('objectType') + ':' + plan_cost_shares.get('objectId'),
+                     'linkedPlanServices1': linked_plan_services[0].get('objectType') + ':' + linked_plan_services[0].get(
+                         'objectId'),
+                     'linkedPlanServices2': linked_plan_services[1].get('objectType') + ':' + linked_plan_services[1].get(
+                         'objectId'),
+                     '_org': org,
+                     "objectId": object_id,
+                     "objectType": object_type,
+                     'planType': plan_type,
+                     'creationDate': creation_date
+                     }
+        es.index(index='contents', doc_type='title', id=object_type + ':' + object_id, body= hash_root)
+        # print(org, type(org))
+        linkedService1 = linked_plan_services[0]
+        linkedService2 = linked_plan_services[1]
+        if linkedService1.get('linkedService').get('_org') != 'example.com':
+            return jsonify('please input a valid email address'), 400
+        # 501
+        hash_planCostShares = {
+            "deductible": plan_cost_shares.get('deductible'),
+            "_org": plan_cost_shares.get('_org'),
+            "copay": plan_cost_shares.get('copay'),
+            "objectId": plan_cost_shares.get('objectId'),
+            "objectType": plan_cost_shares.get('objectType')
+        }
+        es.index(index='contents', doc_type='title', id=plan_cost_shares.get('objectType') + ':' + plan_cost_shares.get('objectId'), body=hash_planCostShares)
+        # print(hash_planCostShares)
+        # 504
+        hash_linkedService1 = {
+            "linkedService": linked_plan_services[0].get('linkedService').get('objectType') + ':' + linked_plan_services[
+                0].get('linkedService').get('objectId'),
+            "planserviceCostShares": linked_plan_services[0].get('planserviceCostShares').get('objectType') + ':' +
+                                     linked_plan_services[0].get('planserviceCostShares').get('objectId'),
+            "_org": linked_plan_services[0].get('_org'),
+            "objectId": linked_plan_services[0].get('objectId'),
+            "objectType": linked_plan_services[0].get('objectType')
+        }
+        # print(hash_linkedService1)
+        es.index(index='contents', doc_type='title',
+                 id=linked_plan_services[0].get('objectType') + ':' + linked_plan_services[0].get('objectId'),
+                 body=hash_linkedService1)
+        # 507
+        hash_linkedService2 = {
+            "linkedService": linked_plan_services[1].get('linkedService').get('objectType') + ':' + linked_plan_services[
+                1].get('linkedService').get('objectId'),
+            "planserviceCostShares": linked_plan_services[1].get('planserviceCostShares').get('objectType') + ':' +
+                                     linked_plan_services[1].get('planserviceCostShares').get('objectId'),
+            "_org": linked_plan_services[1].get('_org'),
+            "objectId": linked_plan_services[1].get('objectId'),
+            "objectType": linked_plan_services[1].get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linked_plan_services[1].get('objectType') + ':' + linked_plan_services[1].get('objectId'),
+                 body=hash_linkedService2)
+        # 502
+        hash_11 = {
+            "_org": linkedService1.get('linkedService').get('_org'),
+            "objectId": linkedService1.get('linkedService').get('objectId'),
+            "objectType": linkedService1.get('linkedService').get('objectType'),
+            "name": linkedService1.get('linkedService').get('name')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService1.get('linkedService').get('objectType') + ':' + linkedService1.get('linkedService').get('objectId'),
+                 body=hash_11)
+        # 503
+        hash_12 = {
+            "deductible": linkedService1.get('planserviceCostShares').get('deductible'),
+            "_org": linkedService1.get('planserviceCostShares').get('_org'),
+            "copay": linkedService1.get('planserviceCostShares').get('copay'),
+            "objectId": linkedService1.get('planserviceCostShares').get('objectId'),
+            "objectType": linkedService1.get('planserviceCostShares').get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService1.get('planserviceCostShares').get('objectType') + ':' + linkedService1.get('planserviceCostShares').get('objectId'),
+                 body=hash_12)
+        # 505
+        hash_21 = {
+            "_org": linkedService2.get('linkedService').get('_org'),
+            "objectId": linkedService2.get('linkedService').get('objectId'),
+            "objectType": linkedService2.get('linkedService').get('objectType'),
+            "name": linkedService2.get('linkedService').get('name')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService2.get('linkedService').get('objectType') + ':' + linkedService2.get('linkedService').get('objectId'),
+                 body=hash_21)
+        # 506
+        hash_22 = {
+            "deductible": linkedService2.get('planserviceCostShares').get('deductible'),
+            "_org": linkedService2.get('planserviceCostShares').get('_org'),
+            "copay": linkedService2.get('planserviceCostShares').get('copay'),
+            "objectId": linkedService2.get('planserviceCostShares').get('objectId'),
+            "objectType": linkedService2.get('planserviceCostShares').get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService2.get('planserviceCostShares').get('objectType') + ':' + linkedService2.get('planserviceCostShares').get('objectId'),
+                 body=hash_22)
+
+        return jsonify("successfully indexed!"), 200
+    except Exception as e:
+        if "ConnectionError" in str(e):
+            return jsonify("Connection Error! Please check if your elasticsearch is running!"), 500
+
+
+# search
+@app.route('/search_use', methods=['POST'])
+def seach_use():
+    id = request.json.get('id')
+    keyword = request.json.get('keyword')
+    value = request.json.get('value')
+    min = request.json.get('min')
+    max = request.json.get('max')
+    if id is not None:
+        try:
+            res = es.get(index="contents", doc_type='title', id=id)
+            return jsonify(res['_source'])
+        except Exception as e:
+            if "ConnectionError" in str(e):
+                return jsonify("Connection Error! Please check if your elasticsearch is running!"), 500
+            if "NotFound" in str(e):
+                return jsonify("Id not found! Please double check your input!"), 404
+    elif keyword is not None:
+        # body = {
+        #     "query": {
+        #         "multi_match": {
+        #             "query": keyword,
+        #             "fields": ["content", "title"]
+        #         }
+        #     }
+        # }
+        if min is not None or max is not None:
+            if max is None:
+                max = 0
+            if min is None:
+                min = 0
+            body = {
+                "query": {
+                    "range": {
+                        keyword: {
+                            "gte": min,
+                            "lte": max
+                        }
+                    }
+                }
+            }
+            res = es.search(index="contents", doc_type='title', body=body)
+            return jsonify(res['hits']['hits']), 200
+        else:
+            body = {
+                'query': {
+                    'match': {
+                        keyword: value
+                    }
+                }
+            }
+            # print(body)
+            res = es.search(index="contents", doc_type='title', body=body)
+            # print(res['hits']['hits'])
+            # return jsonify("ok")
+            return jsonify(res['hits']['hits']), 200
+    else:
+        return jsonify("please check if your input makes sense"), 404
+    # body = {
+    #     "query": {
+    #         "multi_match": {
+    #             "query": keyword,
+    #             "fields": ["content", "title"]
+    #         }
+    #     }
+    # }
+    #
+    # res = es.search(index="contents", doc_type="title", body=body)
+
+# Provide a method to create access tokens. The create_access_token()
+# function is used to actually generate the token, and you can return
+# it to the caller however you choose.
 @app.route('/auth/token', methods=['POST'])
 def login():
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+
     username = request.json.get('username', None)
     password = request.json.get('password', None)
-    # token = request.headers.get("Authorization")
-    # print(token)
+    if not username:
+        return jsonify({"msg": "Missing username parameter"}), 400
+    if not password:
+        return jsonify({"msg": "Missing password parameter"}), 400
+
     if username != 'top' or password != 'secret':
-        return jsonify({"msg": "Wrong username or password"}), 401
+        return jsonify({"msg": "Bad username or password"}), 401
 
-    # Create our JWTs
+    # Identity can be any data that is json serializable
     access_token = create_access_token(identity=username, expires_delta=EXPIRE)
-    refresh_token = create_refresh_token(identity=username)
-
-    # Store the tokens in redis with a status of not currently revoked. We
-    # can use the `get_jti()` method to get the unique identifier string for
-    # each token. We can also set an expires time on these tokens in redis,
-    # so they will get automatically removed after they expire. We will set
-    # everything to be automatically removed shortly after the token expires
-    access_jti = get_jti(encoded_token=access_token)
-    refresh_jti = get_jti(encoded_token=refresh_token)
-    revoked_store.set(access_jti, 'false', ACCESS_EXPIRES * 1.2)
-    revoked_store.set(refresh_jti, 'false', REFRESH_EXPIRES * 1.2)
-
     ret = {
         'token': access_token,
-        # 'refresh_token': refresh_token,
         'expiration time': str(EXPIRE),
         'will expire at': str(datetime.now() + EXPIRE)
     }
-    return jsonify(ret), 201
+    return jsonify(ret), 200
 
 
 # A blacklisted access token will not be able to access this any more
@@ -88,37 +276,6 @@ def login():
 @jwt_required
 def protected():
     return jsonify({'hello': 'world'})
-
-
-# A blacklisted refresh tokens will not be able to access this endpoint
-@app.route('/auth/refresh', methods=['POST'])
-@jwt_refresh_token_required
-def refresh():
-    # Do the same thing that we did in the login endpoint here
-    current_user = get_jwt_identity()
-    access_token = create_access_token(identity=current_user)
-    access_jti = get_jti(encoded_token=access_token)
-    revoked_store.set(access_jti, 'false', ACCESS_EXPIRES * 1.2)
-    ret = {'access_token': access_token}
-    return jsonify(ret), 201
-
-
-# Endpoint for revoking the current users access token
-@app.route('/auth/access_revoke', methods=['DELETE'])
-@jwt_required
-def logout():
-    jti = get_raw_jwt()['jti']
-    revoked_store.set(jti, 'true', ACCESS_EXPIRES * 1.2)
-    return jsonify({"msg": "Access token revoked"}), 200
-
-
-# Endpoint for revoking the current users refresh token
-@app.route('/auth/refresh_revoke', methods=['DELETE'])
-@jwt_refresh_token_required
-def logout2():
-    jti = get_raw_jwt()['jti']
-    revoked_store.set(jti, 'true', REFRESH_EXPIRES * 1.2)
-    return jsonify({"msg": "Refresh token revoked"}), 200
 
 
 # put
@@ -229,7 +386,6 @@ def delete():
     return final_response, sc
 
 
-
 def put_new_json(input_json):
     object_id = input_json.get('objectId')
     object_type = input_json.get('objectType')
@@ -252,7 +408,7 @@ def put_new_json(input_json):
                  'creationDate': creation_date
                  }
     redis_client.hmset(object_type + ':' + object_id, hash_root)
-    print(org, type(org))
+    # print(org, type(org))
     linkedService1 = linked_plan_services[0]
     linkedService2 = linked_plan_services[1]
     if linkedService1.get('linkedService').get('_org') != 'example.com':
@@ -358,11 +514,6 @@ def post_use():
 @app.route('/get_use', methods=['GET', 'POST'])
 @jwt_required
 def get_use():
-    # try:
-    #     key = request.args['id']
-    # except Exception as e:
-    #     return jsonify('Please check if \'id\' exists in the request'), 500
-    # # print(key, type(key))
     try:
         # 508
         key = 'plan:12xvxc345ssdsds-508'
@@ -431,11 +582,6 @@ def get_use():
         "objectId",
         "objectType"])
     result_504 = unicode_list(value_504)
-    # result_507 = []
-    # for o_504 in value_507:
-    #     r_504 = o_504.decode('utf-8')
-    #     result_507.append(r_504)
-    # print(result_507)
     linkedPlanServices_504 = result_504[0]
     planCostShares_504 = result_504[1]
     _org_504 = result_504[2]
