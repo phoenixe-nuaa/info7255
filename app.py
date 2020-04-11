@@ -1,3 +1,7 @@
+import time
+import redis
+from flask.cli import cli
+from rq import Connection, Worker, Queue
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, make_response
 from flask_redis import FlaskRedis
@@ -6,16 +10,18 @@ from flask_jwt_extended import (
 )
 from elasticsearch import Elasticsearch
 
-REDIS_URL = "redis://localhost:6379/0"
+# REDIS_URL = "redis://localhost:6379/0"
 app = Flask(__name__)
 redis_client = FlaskRedis(app)
 app.config['JSON_SORT_KEYS'] = False
 es = Elasticsearch()
+app.config["REDIS_URL"] = 'redis://localhost:6379/0'
+app.config["QUEUES"] = ["default"]
 
 # Setup the Flask-JWT-Extended extension
 app.config['JWT_SECRET_KEY'] = 'super-secret'  # Change this!
 jwt = JWTManager(app)
-EXPIRE = timedelta(minutes=10)
+EXPIRE = timedelta(minutes=30)
 
 
 # To do: Prune the token part (done)
@@ -25,20 +31,57 @@ EXPIRE = timedelta(minutes=10)
 
 @app.route('/insert_data', methods=['POST'])
 def insert_data():
-    id = request.json.get('id')
-    username = request.json.get('username')
-    password = request.json.get('password')
+    # id = request.json.get('id')
+    # username = request.json.get('username')
+    # password = request.json.get('password')
+    #
+    # body = {
+    #     'id': id,
+    #     'name': username,
+    #     'password': password,
+    #     'timestamp': datetime.now()
+    # }
+    #
+    # result = es.index(index='contents', doc_type='title', id=id, body=body)
+    es.delete(index="contents", doc_type='title', id="membercostshare:1234512xvc1314asdfs-509")
 
-    body = {
-        'id': id,
-        'name': username,
-        'password': password,
-        'timestamp': datetime.now()
+    return jsonify("deleted!"), 200
+
+
+def create_task(task_type):
+    time.sleep(int(task_type) * 10)
+    return True
+
+
+@app.route("/tasks", methods=["POST"])
+def run_task():
+    ## get task id
+    task_type = request.json.get("id")
+    ## connect to redis
+    with Connection(redis.from_url(app.config["REDIS_URL"])):
+        ## create the queue
+        q = Queue()
+        ## add to the queue
+        task = q.enqueue(create_task, task_type)
+    ## make responses
+    response_object = {
+        "status": "success",
+        "data": {
+            "task_id": task.get_id()
+        }
     }
+    return jsonify(response_object), 202
 
-    result = es.index(index='contents', doc_type='title', id=id, body=body)
 
-    return jsonify(result)
+@cli.command("run_worker")
+def run_worker():
+    ## connect to redis
+    redis_url = app.config["REDIS_URL"]
+    redis_connection = redis.from_url(redis_url)
+    ## start the worker
+    with Connection(redis_connection):
+        worker = Worker(app.config["QUEUES"])
+        worker.work()
 
 
 @app.route('/search', methods=['POST'])
@@ -183,6 +226,7 @@ def seach_use():
     min = request.json.get('min')
     max = request.json.get('max')
     if id is not None:
+        print("id not null")
         try:
             res = es.get(index="contents", doc_type='title', id=id)
             return jsonify(res['_source'])
@@ -217,7 +261,7 @@ def seach_use():
             }
             res = es.search(index="contents", doc_type='title', body=body)
             return jsonify(res['hits']['hits']), 200
-        else:
+        elif "*" not in value:
             body = {
                 'query': {
                     'match': {
@@ -226,6 +270,19 @@ def seach_use():
                 }
             }
             # print(body)
+            res = es.search(index="contents", doc_type='title', body=body)
+            # print(res['hits']['hits'])
+            # return jsonify("ok")
+            return jsonify(res['hits']['hits']), 200
+        else:
+            body = {
+                'query': {
+                    'wildcard': {
+                        keyword: value
+                    }
+                }
+            }
+            print("wildcard")
             res = es.search(index="contents", doc_type='title', body=body)
             # print(res['hits']['hits'])
             # return jsonify("ok")
@@ -284,6 +341,126 @@ def protected():
 def put():
     input_json = request.get_json()
     object_id = input_json.get('objectId')
+    es.delete(index="contents", doc_type='title', id="membercostshare:1234vxc2324sdf-501")
+    es.delete(index="contents", doc_type='title', id="service:1234520xvc30asdf-502")
+    es.delete(index="contents", doc_type='title', id="membercostshare:1234512xvc1314asdfs-503")
+    es.delete(index="contents", doc_type='title', id="planservice:27283xvx9asdff-504")
+    es.delete(index="contents", doc_type='title', id="service:1234520xvc30sfs-505")
+    es.delete(index="contents", doc_type='title', id="membercostshare:1234512xvc1314sdfsd-506")
+    es.delete(index="contents", doc_type='title', id="planservice:27283xvx9sdf-507")
+    es.delete(index="contents", doc_type='title', id="plan:12xvxc345ssdsds-508")
+    try:
+        input_json = request.get_json()
+        object_id = input_json.get('objectId')
+        object_type = input_json.get('objectType')
+        plan_cost_shares = input_json.get('planCostShares')
+        linked_plan_services = input_json.get('linkedPlanServices')
+        org = input_json.get('_org')
+        plan_type = input_json.get('planType')
+        creation_date = input_json.get('creationDate')
+
+        # 508
+        hash_root = {'planCostShares': plan_cost_shares.get('objectType') + ':' + plan_cost_shares.get('objectId'),
+                     'linkedPlanServices1': linked_plan_services[0].get('objectType') + ':' + linked_plan_services[0].get(
+                         'objectId'),
+                     'linkedPlanServices2': linked_plan_services[1].get('objectType') + ':' + linked_plan_services[1].get(
+                         'objectId'),
+                     '_org': org,
+                     "objectId": object_id,
+                     "objectType": object_type,
+                     'planType': plan_type,
+                     'creationDate': creation_date
+                     }
+        es.index(index='contents', doc_type='title', id=object_type + ':' + object_id, body= hash_root)
+        # print(org, type(org))
+        linkedService1 = linked_plan_services[0]
+        linkedService2 = linked_plan_services[1]
+        if linkedService1.get('linkedService').get('_org') != 'example.com':
+            return jsonify('please input a valid email address'), 400
+        # 501
+        hash_planCostShares = {
+            "deductible": plan_cost_shares.get('deductible'),
+            "_org": plan_cost_shares.get('_org'),
+            "copay": plan_cost_shares.get('copay'),
+            "objectId": plan_cost_shares.get('objectId'),
+            "objectType": plan_cost_shares.get('objectType')
+        }
+        es.index(index='contents', doc_type='title', id=plan_cost_shares.get('objectType') + ':' + plan_cost_shares.get('objectId'), body=hash_planCostShares)
+        # print(hash_planCostShares)
+        # 504
+        hash_linkedService1 = {
+            "linkedService": linked_plan_services[0].get('linkedService').get('objectType') + ':' + linked_plan_services[
+                0].get('linkedService').get('objectId'),
+            "planserviceCostShares": linked_plan_services[0].get('planserviceCostShares').get('objectType') + ':' +
+                                     linked_plan_services[0].get('planserviceCostShares').get('objectId'),
+            "_org": linked_plan_services[0].get('_org'),
+            "objectId": linked_plan_services[0].get('objectId'),
+            "objectType": linked_plan_services[0].get('objectType')
+        }
+        # print(hash_linkedService1)
+        es.index(index='contents', doc_type='title',
+                 id=linked_plan_services[0].get('objectType') + ':' + linked_plan_services[0].get('objectId'),
+                 body=hash_linkedService1)
+        # 507
+        hash_linkedService2 = {
+            "linkedService": linked_plan_services[1].get('linkedService').get('objectType') + ':' + linked_plan_services[
+                1].get('linkedService').get('objectId'),
+            "planserviceCostShares": linked_plan_services[1].get('planserviceCostShares').get('objectType') + ':' +
+                                     linked_plan_services[1].get('planserviceCostShares').get('objectId'),
+            "_org": linked_plan_services[1].get('_org'),
+            "objectId": linked_plan_services[1].get('objectId'),
+            "objectType": linked_plan_services[1].get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linked_plan_services[1].get('objectType') + ':' + linked_plan_services[1].get('objectId'),
+                 body=hash_linkedService2)
+        # 502
+        hash_11 = {
+            "_org": linkedService1.get('linkedService').get('_org'),
+            "objectId": linkedService1.get('linkedService').get('objectId'),
+            "objectType": linkedService1.get('linkedService').get('objectType'),
+            "name": linkedService1.get('linkedService').get('name')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService1.get('linkedService').get('objectType') + ':' + linkedService1.get('linkedService').get('objectId'),
+                 body=hash_11)
+        # 503
+        hash_12 = {
+            "deductible": linkedService1.get('planserviceCostShares').get('deductible'),
+            "_org": linkedService1.get('planserviceCostShares').get('_org'),
+            "copay": linkedService1.get('planserviceCostShares').get('copay'),
+            "objectId": linkedService1.get('planserviceCostShares').get('objectId'),
+            "objectType": linkedService1.get('planserviceCostShares').get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService1.get('planserviceCostShares').get('objectType') + ':' + linkedService1.get('planserviceCostShares').get('objectId'),
+                 body=hash_12)
+        # 505
+        hash_21 = {
+            "_org": linkedService2.get('linkedService').get('_org'),
+            "objectId": linkedService2.get('linkedService').get('objectId'),
+            "objectType": linkedService2.get('linkedService').get('objectType'),
+            "name": linkedService2.get('linkedService').get('name')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService2.get('linkedService').get('objectType') + ':' + linkedService2.get('linkedService').get('objectId'),
+                 body=hash_21)
+        # 506
+        hash_22 = {
+            "deductible": linkedService2.get('planserviceCostShares').get('deductible'),
+            "_org": linkedService2.get('planserviceCostShares').get('_org'),
+            "copay": linkedService2.get('planserviceCostShares').get('copay'),
+            "objectId": linkedService2.get('planserviceCostShares').get('objectId'),
+            "objectType": linkedService2.get('planserviceCostShares').get('objectType')
+        }
+        es.index(index='contents', doc_type='title',
+                 id=linkedService2.get('planserviceCostShares').get('objectType') + ':' + linkedService2.get('planserviceCostShares').get('objectId'),
+                 body=hash_22)
+
+        return jsonify("updated!"), 200
+    except Exception as e:
+        if "ConnectionError" in str(e):
+            return jsonify("Connection Error! Please check if your elasticsearch is running!"), 500
     try:
         if redis_client.exists('plan:' + object_id):
             flush_db()
@@ -316,46 +493,62 @@ def etag_validation(del_response):
 def patch():
     input_json = request.get_json()
     object_id = input_json.get('planserviceCostShares').get('objectId')
+    planserviceCostShares = input_json.get('planserviceCostShares')
     # print(input_json.get('planserviceCostShares').keys())
-    try:
-        id = 'membercostshare:' + object_id
-        if redis_client.exists('membercostshare:' + object_id):
-            # 503
-            value_503 = redis_client.hmget(id, [
-                'deductible',
-                '_org',
-                'copay',
-                'objectId',
-                'objectType'])
-            result_503 = []
-            for o_503 in value_503:
-                r_503 = o_503.decode('utf-8')
-                result_503.append(r_503)
-
-            hash_12 = {
-                "deductible": input_json.get('planserviceCostShares').get('deductible'),
-                "_org": "example.com",
-                "copay": 0,
-                "objectId": input_json.get('planserviceCostShares').get('objectId'),
-                "objectType": "membercostshare"
-            }
-            redis_client.hmset(id, hash_12)
-            pat_response = make_response(jsonify('id: ' + str(object_id) + " Updated!"), 200)
-        else:
-            hash_12 = {
-                "deductible": input_json.get('planserviceCostShares').get('deductible'),
-                "_org": input_json.get('planserviceCostShares').get('_org'),
-                "copay": input_json.get('planserviceCostShares').get('copay'),
-                "objectId": input_json.get('planserviceCostShares').get('objectId'),
-                "objectType": input_json.get('planserviceCostShares').get('objectType')
-            }
-            redis_client.hmset(id, hash_12)
-            pat_response = make_response(jsonify('id: ' + str(object_id) + " Not Found!"), 404)
-        pat_response.add_etag()
-        final_response, sc = etag_validation(pat_response)
-        return final_response, sc
-    except Exception as e:
-        return jsonify(e), 500
+    hash_12 = {
+        "deductible": planserviceCostShares.get('deductible'),
+        "_org": planserviceCostShares.get('_org'),
+        "copay": planserviceCostShares.get('copay'),
+        "objectId": planserviceCostShares.get('objectId'),
+        "objectType": planserviceCostShares.get('objectType')
+    }
+    es.index(index='contents', doc_type='title',
+             id=planserviceCostShares.get('objectType') + ':' + planserviceCostShares.get('objectId'),
+             body=hash_12)
+    pat_response = make_response(jsonify('new object added'), 200)
+    pat_response.add_etag()
+    final_response, sc = etag_validation(pat_response)
+    return final_response, sc
+    # return jsonify("new object added"), 200
+    # try:
+    #     id = 'membercostshare:' + object_id
+    #     if redis_client.exists('membercostshare:' + object_id):
+    #         # 503
+    #         value_503 = redis_client.hmget(id, [
+    #             'deductible',
+    #             '_org',
+    #             'copay',
+    #             'objectId',
+    #             'objectType'])
+    #         result_503 = []
+    #         for o_503 in value_503:
+    #             r_503 = o_503.decode('utf-8')
+    #             result_503.append(r_503)
+    #
+    #         hash_12 = {
+    #             "deductible": input_json.get('planserviceCostShares').get('deductible'),
+    #             "_org": "example.com",
+    #             "copay": 0,
+    #             "objectId": input_json.get('planserviceCostShares').get('objectId'),
+    #             "objectType": "membercostshare"
+    #         }
+    #         redis_client.hmset(id, hash_12)
+    #         pat_response = make_response(jsonify('id: ' + str(object_id) + " Updated!"), 200)
+    #     else:
+    #         hash_12 = {
+    #             "deductible": input_json.get('planserviceCostShares').get('deductible'),
+    #             "_org": input_json.get('planserviceCostShares').get('_org'),
+    #             "copay": input_json.get('planserviceCostShares').get('copay'),
+    #             "objectId": input_json.get('planserviceCostShares').get('objectId'),
+    #             "objectType": input_json.get('planserviceCostShares').get('objectType')
+    #         }
+    #         redis_client.hmset(id, hash_12)
+    #         pat_response = make_response(jsonify('id: ' + str(object_id) + " Not Found!"), 404)
+    #     pat_response.add_etag()
+    #     final_response, sc = etag_validation(pat_response)
+    #     return final_response, sc
+    # except Exception as e:
+    #     return jsonify(e), 500
 
 
 @app.route('/')
