@@ -6,7 +6,7 @@ In this project, we will develop a REST Api to parse a JSON schema model divided
 
 ## Requirements
 - Prototype demo 1
-    - Develop a Spring Boot based REST Api to parse a given sample JSON schema.
+    - Develop a Flask based REST Api to parse a given sample JSON schema.
     - Save the JSON schema in a redis key value store.
     - Demonstrate the use of operations like GET, POST and DELETE for the first prototype demo.
 - Prototype demo 2
